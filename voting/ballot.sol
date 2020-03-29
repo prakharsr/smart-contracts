@@ -20,6 +20,8 @@ contract Ballot {
 
     Proposal[] public proposals;
 
+
+    /// Give a proposal names array
     constructor(bytes32[] memory proposalNames) public {
         chairperson = msg.sender;
         voters[chairperson].weight = 1;
