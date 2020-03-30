@@ -1,58 +1,97 @@
-pragma solidity >=0.4.22 <0.7.0;
+pragma solidity >0.4.23 <0.7.0;
 
 contract BlindAuction {
+    struct bid {
+        bytes32 blindedBid;
+        uint deposit;
+    }
+
     address payable public beneficiary;
-    uint public auctionEndTime;
+    uint public biddingEnd;
+    uint public revealEnd;
+    bool public ended;
+
+    mapping(address => bid[]) public bids;
+
     address public highestBidder;
     uint public highestBid;
 
     mapping(address => uint) pendingReturns;
 
-    bool ended;
+    event AuctionEnded(address winner, uint highestBid);
 
-    event HighestBidIncreased(address bidder, uint amount);
-    event AuctionEnded(address winner, uint amount);
+    modifier onlyBefore(uint _time) { require(now < _time); _; }
+    modifier onlyAfter(uint _time) { require(now > _time); _; }
 
-    /// Give biddingTime and beneficiary address
-    constructor (uint _biddingTime, address payable _beneficiary) public {
+    ///Input biddingTime, revealTime and eneficiary address
+    constructor(
+        uint _biddingTime,
+        uint _revealTime,
+        address payable _beneficiary
+    ) public {
         beneficiary = _beneficiary;
-        auctionEndTime = now + _biddingTime;
+        biddingEnd = now + _biddingTime;
+        revealEnd = biddingEnd + _revealTime;
     }
 
-    function bid() public payable {
-        require(now <= auctionEndTime, "Auction aleady ended");
+    function Bid(bytes32 _blindedBid) public payable onlyBefore(biddingEnd) {
+        bids[msg.sender].push(bid({
+            blindedBid: _blindedBid,
+            deposit: msg.value
+        }));
+    }
 
-        require(msg.value > highestBid, "There is already a higher bid");
+    function reveal(uint[] memory _values, bool[] memory _fake, bytes32[] memory _secret)
+    public onlyAfter(biddingEnd) onlyBefore(revealEnd) {
+        uint length = bids[msg.sender].length;
+        require(_values.length == length);
+        require(_fake.length == length);
+        require(_secret.length == length);
 
-        if(highestBid != 0) {
-            pendingReturns[highestBidder] += highestBid;
+        uint refund;
+
+        for(uint i = 0; i < length; i++) {
+            bid storage bidToCheck = bids[msg.sender][i];
+            (uint value, bool fake, bytes32 secret) = (_values[i], _fake[i], _secret[i]);
+
+            if(bidToCheck.blindedBid != keccak256(abi.encodePacked(value, fake, secret))) {
+                continue;
+            }
+            refund += bidToCheck.deposit;
+            if(!fake && bidToCheck.deposit >= value) {
+                if(placeBid(msg.sender, value)) {
+                    refund -= value;
+                }
+            }
+            bidToCheck.blindedBid = bytes32(0);
         }
-
-        highestBid = msg.value;
-        highestBidder = msg.sender;
-        emit HighestBidIncreased(msg.sender, msg.value);
+        msg.sender.transfer(refund);
     }
 
-    function withdraw() public returns (bool) {
+    function withdraw() public {
         uint amount = pendingReturns[msg.sender];
         if(amount > 0) {
             pendingReturns[msg.sender] = 0;
 
-            if(!msg.sender.send(amount)) {
-                pendingReturns[msg.sender] = amount;
-                return false;
-            }
+            msg.sender.transfer(amount);
         }
+    }
+
+    function auctionEnd() public onlyAfter(revealEnd) {
+        require(!ended);
+        emit AuctionEnded(highestBidder, highestBid);
+        ended = true;
+        beneficiary.transfer(highestBid);
+    }
+
+    function placeBid(address bidder, uint value) internal returns (bool success) {
+        if(value <= highestBid) return false;
+        if(highestBidder != address(0)) {
+            pendingReturns[highestBidder] += highestBid;
+        }
+        highestBid = value;
+        highestBidder = bidder;
         return true;
     }
 
-    function auctionEnd() public {
-        require(now >= auctionEndTime, "Auction not yet ended");
-        require(!ended, "Auction has already ended");
-
-        ended = true;
-        emit AuctionEnded(highestBidder, highestBid);
-
-        beneficiary.transfer(highestBid);
-    }
 }
